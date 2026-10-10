@@ -119,15 +119,18 @@ describe('JWT 鉴权单次往返', () => {
     expect(await authCount(id)).toBe(counted);
   });
 
-  it('会话行缺失的旧 KV 会话与未迁移版本走慢路径，计数不重复', async () => {
+  it('未迁移鉴权版本走慢路径完成迁移，计数不重复；只存在于 KV 的会话不再迁入', async () => {
     const id = await seedUser('perf-auth-legacy', { migrated: false });
-    const sid = crypto.randomUUID();
-    await env.kv.put(`sess:${sid}`, JSON.stringify({ userId: id, createdAt: Date.now() }));
-    const jwt = await signToken(env.jwt_secret, { sub: id, sid, epoch: 0, uepoch: 0 });
+    const kvOnly = crypto.randomUUID();
+    await env.kv.put(`sess:${kvOnly}`, JSON.stringify({ userId: id, createdAt: Date.now() }));
+    const kvJwt = await signToken(env.jwt_secret, { sub: id, sid: kvOnly, epoch: 0, uepoch: 0 });
+    expect((await request('/api/auth/me', bearer(kvJwt))).status).toBe(401);
+    expect(await createDb(env).select().from(sessions).where(eq(sessions.id, kvOnly)).get()).toBeUndefined();
+
+    const { jwt } = await tokenFor(id);
     const before = await authCount(id);
     expect((await request('/api/auth/me', bearer(jwt))).status).toBe(200);
     expect(await authCount(id)).toBe(before + 1);
-    expect(await createDb(env).select().from(sessions).where(eq(sessions.id, sid)).get()).toBeDefined();
     expect((await createDb(env).select().from(users).where(eq(users.id, id)).get())!.authVersionMigrated).toBe(true);
     // 迁移完成后的下一次请求走快路径，同样只计一次
     expect((await request('/api/auth/me', bearer(jwt))).status).toBe(200);

@@ -38,30 +38,14 @@ export async function createSession(env: Env, userId: number, verified?: {
   return sid;
 }
 
-export async function sessionExists(env: Env, sid: string): Promise<boolean> {
+/**
+ * 会话只认 D1：必须存在、未撤销、未过期，且归属于令牌声明的用户。
+ * 不再从 KV 惰性迁入——换库时，旧库切换窗口里签发的令牌曾借此在新库落到同 id 的另一个用户上（2026-10-11 串号事故）。
+ */
+export async function sessionValidFor(env: Env, sid: string, userId: number): Promise<boolean> {
   const db = createDb(env);
   const row = await db.select().from(sessions).where(eq(sessions.id, sid)).get();
-  if (row) return row.revokedAt === null && row.expiresAt.getTime() > Date.now();
-
-  // 首次升级时把仍有效的旧 KV 会话惰性迁入 D1；此后撤销均以 D1 强一致状态为准。
-  try {
-    const legacy = await env.kv.get<{ userId?: number; createdAt?: number }>(sessKey(sid), 'json');
-    if (!legacy?.userId) return false;
-    const now = Date.now();
-    await db
-      .insert(sessions)
-      .values({
-        id: sid,
-        userId: legacy.userId,
-        createdAt: new Date(legacy.createdAt || now),
-        expiresAt: new Date(now + SESSION_TTL_SECONDS * 1000),
-      })
-      .onConflictDoNothing();
-    const migrated = await db.select().from(sessions).where(eq(sessions.id, sid)).get();
-    return !!migrated && migrated.revokedAt === null && migrated.expiresAt.getTime() > now;
-  } catch {
-    return false;
-  }
+  return !!row && row.userId === userId && row.revokedAt === null && row.expiresAt.getTime() > Date.now();
 }
 
 export async function destroySession(env: Env, sid: string): Promise<void> {

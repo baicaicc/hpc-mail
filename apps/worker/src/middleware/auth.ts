@@ -11,7 +11,7 @@ import { users } from '../db/schema.js';
 import { AppError } from '../lib/errors.js';
 import { execCtx } from '../lib/http.js';
 import { verifyToken, type JwtClaims } from '../lib/jwt.js';
-import { getUserEpoch, sessionExists } from '../services/session.js';
+import { getUserEpoch, sessionValidFor } from '../services/session.js';
 import { getSettings } from '../services/setting.js';
 import {
   bumpCounter,
@@ -30,6 +30,7 @@ function bearer(c: { req: { header: (k: string) => string | undefined } }): stri
 
 /** sessions + users 合并读出的鉴权所需列（不含密码哈希、TOTP 密钥与恢复码） */
 interface AuthRow {
+  session_user_id: number;
   revoked_at: number | null;
   expires_at: number;
   id: number | null;
@@ -90,13 +91,13 @@ async function fastAuth(c: Context<AppContext>, claims: JwtClaims): Promise<Auth
   const minute = minuteWindow(1, now);
   const guard = {
     sql: `EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.id = ?
-      WHERE s.id = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+      WHERE s.id = ? AND s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > ?
         AND u.status = 'active' AND u.auth_version_migrated = 1 AND u.auth_version = ?)`,
     params: [claims.sub, claims.sid, now, claims.uepoch],
   };
   const [authResult, securityResult, userRateResult, globalRateResult] = await db.batch([
     // 用户按 claims.sub 取（与原先「先验会话、再按 sub 查用户」一致），LEFT JOIN 以区分用户缺失
-    db.prepare(`SELECT s.revoked_at, s.expires_at, u.id, u.username, u.role, u.status, u.auth_version,
+    db.prepare(`SELECT s.user_id AS session_user_id, s.revoked_at, s.expires_at, u.id, u.username, u.role, u.status, u.auth_version,
         u.auth_version_migrated, u.created_at, u.avatar_key, u.totp_enabled_at
       FROM sessions s LEFT JOIN users u ON u.id = ? WHERE s.id = ?`).bind(claims.sub, claims.sid),
     db.prepare(`SELECT value FROM settings WHERE key = 'security'`),
@@ -105,6 +106,8 @@ async function fastAuth(c: Context<AppContext>, claims: JwtClaims): Promise<Auth
   ]);
   const row = authResult?.results?.[0] as AuthRow | undefined;
   if (!row) return null;
+  // 会话必须属于令牌声明的用户：防止同一会话 id 被解释成另一个账号
+  if (Number(row.session_user_id) !== claims.sub) throw new AppError('unauthorized', '会话已失效');
   if (row.revoked_at !== null || !(Number(row.expires_at) > now)) {
     throw new AppError('unauthorized', '会话已失效');
   }
@@ -135,9 +138,9 @@ async function fastAuth(c: Context<AppContext>, claims: JwtClaims): Promise<Auth
   return authUser;
 }
 
-/** 原有逐步校验路径：负责旧 KV 会话与未迁移鉴权版本的惰性迁移 */
+/** 原有逐步校验路径：负责未迁移鉴权版本的惰性迁移。会话只认 D1 且必须属于令牌用户，不再从 KV 迁入 */
 async function slowAuth(c: Context<AppContext>, claims: JwtClaims): Promise<AuthUser> {
-  if (!(await sessionExists(c.env, claims.sid))) {
+  if (!(await sessionValidFor(c.env, claims.sid, claims.sub))) {
     throw new AppError('unauthorized', '会话已失效');
   }
 
