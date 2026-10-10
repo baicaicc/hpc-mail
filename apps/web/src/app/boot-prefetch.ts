@@ -7,6 +7,7 @@ import { getAuthRevision, getAuthToken } from '@/lib/auth-token';
 import { queryClient as defaultClient } from '@/lib/query-client';
 import { domainsQueryOptions, publicConfigQueryOptions } from '@/lib/use-config';
 import { sessionQueryOptions } from '@/lib/use-session';
+import { restoreQueryCache } from './query-persistence';
 import { loadAppShell, normalizePathname, routeLoaderFor, warmModule } from './route-modules';
 
 /**
@@ -35,11 +36,15 @@ export function prefetchAuthedRoute(client: QueryClient, rawPathname: string, se
   if (mail) void client.prefetchQuery(messageDetailQueryOptions(Number(mail[1]), parseMailView(params)));
 }
 
-/** main.tsx 在 createRoot 之前调用：公开配置无条件预取，其余仅在有 token 时进行。 */
+/**
+ * main.tsx 在 createRoot 之前调用：先恢复当前账户的持久缓存（首屏直接渲染上次的数据），
+ * 再预取——恢复的数据已标记失效，预取即后台刷新。公开配置无条件预取，其余仅在有 token 时进行。
+ */
 export function bootPrefetch(
   client: QueryClient = defaultClient,
   location: Pick<Location, 'pathname' | 'search'> = globalThis.location,
 ): void {
+  restoreQueryCache(client);
   void client.prefetchQuery(publicConfigQueryOptions());
   if (!getAuthToken()) return;
   void client.prefetchQuery(sessionQueryOptions(getAuthRevision()));

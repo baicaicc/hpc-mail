@@ -1,8 +1,8 @@
 import { hashKey, QueryClientProvider } from '@tanstack/react-query';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ListMessagesQuery } from '@hpc-mail/shared';
+import type { ListMessagesQuery, MessageSummary } from '@hpc-mail/shared';
 
 const api = vi.hoisted(() => ({
   config: vi.fn(async () => ({ siteTitle: 'HPC Mail', registrationMode: 'closed', domains: [] })),
@@ -10,7 +10,7 @@ const api = vi.hoisted(() => ({
   mailboxes: vi.fn(async () => [{ id: 1, address: 'me@example.com', domain: 'example.com', displayName: '' }]),
   shared: vi.fn(async () => []),
   domains: vi.fn(async () => ['example.com']),
-  list: vi.fn(async () => ({ items: [], nextCursor: null })),
+  list: vi.fn(async () => ({ items: [] as MessageSummary[], nextCursor: null })),
   detail: vi.fn(async (id: number) => ({ id })),
   unread: vi.fn(async () => ({ unread: 0 })),
 }));
@@ -22,6 +22,14 @@ vi.mock('@/api/resources', () => ({
   messageApi: { list: api.list, detail: api.detail, unreadCount: api.unread },
 }));
 const loaders = vi.hoisted(() => ({ shell: vi.fn(async () => ({})), route: vi.fn(async () => ({})) }));
+vi.mock('@tanstack/react-virtual', () => ({
+  useWindowVirtualizer: ({ count }: { count: number }) => ({
+    getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ index, start: index * 84 })),
+    getTotalSize: () => count * 84,
+    measureElement: () => {},
+    scrollToIndex: () => {},
+  }),
+}));
 vi.mock('./route-modules', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./route-modules')>();
   return {
@@ -35,7 +43,10 @@ import { queryKeys } from '@/api/query-keys';
 import { InboxPage } from '@/features/inbox/inbox-page';
 import { listMailView, mailHref, parseMailView } from '@/features/inbox/mail-view';
 import { queryClient } from '@/lib/query-client';
+import { getAuthRevision } from '@/lib/auth-token';
+import { useSessionQuery } from '@/lib/use-session';
 import { bootPrefetch } from './boot-prefetch';
+import { defaultInboxListKey, queryCacheStorageKey, writeQueryCache } from './query-persistence';
 
 const cachedHashes = () => queryClient.getQueryCache().getAll().map((query) => query.queryHash);
 
@@ -96,6 +107,65 @@ describe('bootPrefetch', () => {
     expect(api.detail).toHaveBeenCalledWith(42, { scope: 'user', userId: 7 }, expect.any(AbortSignal));
     expect(cachedHashes()).toContain(hashKey(queryKeys.messages.detail(42, { scope: 'user', userId: 7 })));
     expect(api.list).not.toHaveBeenCalled();
+  });
+});
+
+describe('持久缓存恢复', () => {
+  const b64url = (value: unknown) => btoa(JSON.stringify(value)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const token = `${b64url({ alg: 'HS256' })}.${b64url({ sub: 1, sid: 's' })}.sig`;
+  const cachedMail = {
+    id: 7, direction: 'inbound', address: 'me@example.com', domain: 'example.com', fromAddress: 'a@example.com', fromName: '',
+    subject: '上次看到的邮件', preview: 'hi', verificationCode: '', status: 'received', errorDetail: '', isRead: false,
+    isStarred: false, hasAttachments: false, size: 1, createdAt: '2026-10-10T00:00:00Z',
+  } as MessageSummary;
+
+  function SessionProbe() {
+    const { data } = useSessionQuery();
+    return <p>user={data?.username}</p>;
+  }
+  const renderInbox = () =>
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/inbox']}>
+          <SessionProbe />
+          <InboxPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+  it('收件箱与会话用页面同一批 queryKey 恢复：首屏直接渲染缓存，后台各刷新一次', async () => {
+    // 上次打开：页面经由启动预取正常取数，随后写入持久缓存
+    localStorage.setItem('token', token);
+    api.list.mockResolvedValueOnce({ items: [cachedMail], nextCursor: null });
+    bootPrefetch(queryClient, { pathname: '/inbox', search: '' });
+    const first = renderInbox();
+    expect(await screen.findByText('上次看到的邮件')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('user=me')).toBeInTheDocument());
+    writeQueryCache(queryClient);
+    expect(localStorage.getItem(queryCacheStorageKey(1))).toContain('上次看到的邮件');
+    first.unmount();
+    queryClient.clear();
+    Object.values(api).forEach((mock) => mock.mockClear());
+
+    // 再次打开：接口都还没返回时首屏已是上次的数据
+    const pending = () => new Promise<never>(() => {});
+    for (const mock of [api.me, api.list, api.mailboxes, api.shared, api.domains, api.unread, api.config]) {
+      (mock as ReturnType<typeof vi.fn>).mockImplementationOnce(pending);
+    }
+    bootPrefetch(queryClient, { pathname: '/inbox', search: '' });
+    expect(cachedHashes()).toContain(hashKey(defaultInboxListKey()));
+    expect(cachedHashes()).toContain(hashKey(queryKeys.sessionForRevision(getAuthRevision())));
+    renderInbox();
+    expect(screen.getByText('上次看到的邮件')).toBeInTheDocument();
+    expect(screen.getByText('user=me')).toBeInTheDocument();
+    expect(screen.getByText('同步中')).toBeInTheDocument();
+    // 恢复的数据已过期：启动预取即后台刷新，挂载后不重复请求
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.me).toHaveBeenCalledTimes(1);
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(api.mailboxes).toHaveBeenCalledTimes(1);
+    expect(api.unread).toHaveBeenCalledTimes(1);
+    expect(api.config).toHaveBeenCalledTimes(1);
   });
 });
 

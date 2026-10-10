@@ -32,6 +32,11 @@ curl -sS -D - -o /dev/null "$BASE_URL$asset" | tr -d '\r' | grep -qi '^cache-con
 missing_asset=$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "$BASE_URL/assets/missing-smoke-00000000.js")
 [ "$missing_asset" = "404 text/plain; charset=utf-8" ] || fail "缺失哈希资源未返回 404: $missing_asset"
 
+step "Service Worker 可更新"
+sw_headers=$(curl -sS -D - -o /dev/null "$BASE_URL/sw.js" | tr -d '\r')
+echo "$sw_headers" | head -1 | grep -q ' 200' || fail "/sw.js 未返回 200"
+echo "$sw_headers" | grep -qi '^cache-control:.*no-cache' || fail "/sw.js 缺少 no-cache，紧急关闭版本可能无法及时生效"
+
 step "公开配置合法"
 timing=$(curl -sS -D - -o /dev/null "$BASE_URL/api/config" | tr -d '\r' | grep -i '^server-timing:' || true)
 echo "$timing" | grep -q 'app;dur=' || fail "API 响应缺少 Server-Timing"

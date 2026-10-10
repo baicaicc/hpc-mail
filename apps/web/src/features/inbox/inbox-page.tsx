@@ -1,9 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { AtSign, MailOpen } from 'lucide-react';
+import { AtSign, MailOpen, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { MarkAllReadRequest } from '@hpc-mail/shared';
+import { queryKeys } from '@/api/query-keys';
 import { messageApi } from '@/api/resources';
+import { useRestoredQueryRefreshing } from '@/app/query-persistence';
 import { PageHeader } from '@/components/page-header';
 import { QueryErrorState } from '@/components/query-error-state';
 import { Button } from '@/components/ui/button';
@@ -108,13 +110,25 @@ export function InboxPage() {
 
   // 与启动预取同源的请求参数：列表不再等地址列表返回才挂载
   const query = useMemo(() => inboxListQuery(filters), [filters]);
+  // 列表还是上次打开时的缓存、正在后台刷新：页头轻提示，刷新结果就地合并进列表
+  const syncing = useRestoredQueryRefreshing(queryKeys.messages.list(query));
 
   const readAllLabel = scopedReadAll ? '将当前筛选的未读标为已读' : '全部已读';
 
   return (
     <div className="mx-auto max-w-4xl">
       <PageHeader
-        title="收件箱"
+        title={
+          <span className="inline-flex items-center gap-2">
+            收件箱
+            {syncing && (
+              <span role="status" className="inline-flex items-center gap-1 text-xs font-normal text-ink-tertiary">
+                <RefreshCw aria-hidden className="size-3 animate-spin" />
+                同步中
+              </span>
+            )}
+          </span>
+        }
         actions={
           unreadCount > 0 && (
             <Button

@@ -20,7 +20,10 @@ export function AuthGuard() {
 
   if (!token) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   if (isLoading) return <FullScreenLoader />;
-  if (isError || !user) {
+  // 有用户数据（含启动时恢复的缓存）就先渲染外壳，/auth/me 在后台校验：401 由 apiRequest 清 token 回登录页，
+  // 403（如账号已禁用）以服务端为准；网络等临时失败继续用已有数据，列表自带「显示的是缓存内容」提示
+  const rejected = isError && error instanceof ApiError && error.forbidden;
+  if (!user || rejected) {
     const disabled = error instanceof ApiError && error.code === 'user_disabled';
     const logout = () => {
       clearAuthToken();
