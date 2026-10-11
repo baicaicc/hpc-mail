@@ -16,7 +16,7 @@ export function usePublicConfig() {
 }
 
 /**
- * 当前用户可见的域名（需登录，按角色返回）：管理员=全部系统域名，普通用户=公开子集。
+ * 当前用户可认领的域名：管理员=全部系统域名，普通用户按公共或专属配置。
  * 认领 / 收件箱筛选 / 写邮件选发件域的选项来源。
  */
 export const domainsQueryOptions = () =>

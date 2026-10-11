@@ -128,6 +128,19 @@ invalid_transfer=$(curl -sS -w '\n%{http_code}' -X POST "$BASE_URL/api/admin/mai
 [ "$(echo "$invalid_transfer" | tail -1)" = "400" ] || fail "非法目标用户 ID 未被过户接口拒绝"
 echo "$invalid_transfer" | head -1 | jq -e '.error.code == "validation_failed"' >/dev/null || fail "非法过户请求错误不可解析"
 
+step "用户专属邮箱权限契约与配置回显"
+curl -fsS "$BASE_URL/api/openapi.json" | jq -e '
+  .components.schemas.AdminUser.properties.mailboxPolicy != null and
+  .components.schemas.AdminUser.properties.mailboxPolicyRevision.type == "integer" and
+  .components.schemas.UpdateUserRequest.dependentRequired.mailboxPolicy == ["expectedMailboxPolicyRevision"]
+' >/dev/null || fail "用户专属邮箱权限机器契约缺失"
+curl -fsS "$BASE_URL/api/admin/users" -H "Authorization: Bearer $TOKEN" | jq -e '
+  .data | type == "array" and all(.[];
+    has("mailboxPolicy") and
+    (.mailboxPolicy == null or (.mailboxPolicy | type == "object")) and
+    (.mailboxPolicyRevision | type == "number") and .mailboxPolicyRevision >= 0)
+' >/dev/null || fail "用户邮箱权限配置或版本未正确回显"
+
 step "注册模式=closed 时注册被拒"
 if [ "$mode" = "closed" ]; then
   rcode=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/auth/register" \

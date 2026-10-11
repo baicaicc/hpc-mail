@@ -394,10 +394,10 @@ describe('域名可见性与按域名认领上限', () => {
       },
     });
     expect(await getPublicDomains(env)).toEqual(['example.com']);
-    expect(await getVisibleDomains(env, false)).toEqual(['example.com']);
-    expect(await getVisibleDomains(env, true)).toEqual(['example.com', 'hpc.email']);
-
     const uid = await seedUser('vis-user-2', 'user');
+    const aid = await seedUser('vis-domain-admin', 'admin');
+    expect(await getVisibleDomains(env, uid)).toEqual(['example.com']);
+    expect(await getVisibleDomains(env, aid)).toEqual(['example.com', 'hpc.email']);
     const box = await claimMailbox(env, uid, 'user', { localPart: 'visme', domain: 'example.com' });
     expect(box.address).toBe('visme@example.com');
   });

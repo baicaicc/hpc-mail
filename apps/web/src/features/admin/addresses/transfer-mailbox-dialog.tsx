@@ -64,6 +64,7 @@ export function TransferMailboxDialog({ mailbox, onClose }: { mailbox: Mailbox |
         <DialogHeader title="过户邮箱" description={mailbox?.address} />
         <DialogBody className="flex flex-col gap-4">
           <p className="text-sm text-ink-secondary">当前主人：<b className="text-ink">{mailbox?.ownerUsername || '未知用户'}</b>。过户后，目标用户将获得完整收发权限及全部历史邮件、附件，旧共享授权将全部撤销。</p>
+          <p className="text-xs text-ink-tertiary">目标用户有专属配置时，域名和数量必须符合其邮箱权限；超出时请先调整配置。</p>
           <FormField label="目标用户" required>
             {field => <div className="flex flex-col gap-2">
               <div className="relative">

@@ -27,11 +27,10 @@ app.get('/status', apiKeyAuth, (c) => {
   return ok(c, { status: 'operational', userId: key.userId, role: key.role, scopes: key.scopes });
 });
 
-// 按 key 的角色过滤：普通用户只该看到对其开放的域名。此前这里返回全部系统域名，
-// 既泄露管理员私有域名，AI 拿去认领还会得 403「该域名未对普通用户开放」
+// 与网页及认领校验共用用户的公共/专属规则。
 app.get('/domains', apiKeyAuth, async (c) => {
   const key = c.get('apiKey')!;
-  return ok(c, { domains: await getVisibleDomains(c.env, key.role === 'admin') });
+  return ok(c, { domains: await getVisibleDomains(c.env, key.userId) });
 });
 
 /** OpenAPI 描述（公开，无需 key） */

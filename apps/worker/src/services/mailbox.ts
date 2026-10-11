@@ -7,7 +7,7 @@ import { createDb, type Db } from '../db/client.js';
 import { mailboxes, messages, users } from '../db/schema.js';
 import { AppError } from '../lib/errors.js';
 import type { AuthUser, Env } from '../types.js';
-import { domainPerUserLimit, isDomainPublic } from './domain.js';
+import { loadMailboxPolicyUser, resolveMailboxPolicy, type MailboxPolicyUser } from './mailbox-policy.js';
 import { getSettingsFresh } from './setting.js';
 import { PURGE_MESSAGES_INDEX, purgeStatements } from './message-lifecycle.js';
 import { processStorageCleanup } from './storage-cleanup.js';
@@ -53,6 +53,7 @@ export async function listMailboxes(
 }
 
 interface ClaimPolicy {
+  user: MailboxPolicyUser;
   /** 普通用户的全局/按域认领上限（0=不限；管理员恒为 0），供 INSERT 时原子复核 */
   perUserLimit: number;
   perDomainLimit: number;
@@ -70,18 +71,20 @@ async function evaluateClaimPolicy(
   actor: { userId: number; role: Role },
   localPart: string,
   domain: string,
+  existingUser?: MailboxPolicyUser,
 ): Promise<ClaimPolicy> {
-  const allow = (perUserLimit = 0, perDomainLimit = 0): ClaimPolicy => ({ perUserLimit, perDomainLimit, blocked: null });
-  const block = (reason: MailboxUnavailableReason, error: AppError): ClaimPolicy => ({ perUserLimit: 0, perDomainLimit: 0, blocked: { reason, error } });
+  const user = existingUser ?? await loadMailboxPolicyUser(db, actor.userId);
+  const allow = (perUserLimit = 0, perDomainLimit = 0): ClaimPolicy => ({ user, perUserLimit, perDomainLimit, blocked: null });
+  const block = (reason: MailboxUnavailableReason, error: AppError): ClaimPolicy => ({ user, perUserLimit: 0, perDomainLimit: 0, blocked: { reason, error } });
   if (!settings.domains.list.some((entry) => entry.domain === domain)) {
     return block('domain_unavailable', new AppError('validation_failed', '域名不在系统域名列表内'));
   }
-  if (actor.role === 'admin') return allow();
-  // 可见性：只能认领对普通用户公开的域名（未公开的域名对普通用户等同不存在）
-  if (!isDomainPublic(settings, domain)) {
-    return block('domain_unavailable', new AppError('forbidden', '该域名未对普通用户开放'));
+  const policy = resolveMailboxPolicy(settings, user);
+  if (user.role === 'admin') return allow();
+  const domainPolicy = policy.domains.find((entry) => entry.domain === domain);
+  if (!domainPolicy) {
+    return block('domain_unavailable', new AppError('forbidden', '当前用户无权认领该域名'));
   }
-  const policy = settings.mailbox_policy;
   // 保留前缀禁止认领（防冒充官方身份）
   if (policy.reservedLocalParts.includes(localPart)) {
     return block('reserved', new AppError('forbidden', `前缀 ${localPart} 为系统保留，无法认领`));
@@ -98,7 +101,7 @@ async function evaluateClaimPolicy(
     }
   }
   // 按域名上限：统计该用户在此域名下已认领数
-  const domainLimit = domainPerUserLimit(settings, domain);
+  const domainLimit = domainPolicy.perUserLimit;
   if (domainLimit > 0) {
     const ownedInDomain = await db
       .select({ value: sql<number>`COUNT(*)` })
@@ -123,7 +126,7 @@ export async function claimMailbox(
   const db = createDb(env);
   const policy = await evaluateClaimPolicy(db, settings, { userId, role }, req.localPart, req.domain);
   if (policy.blocked) throw policy.blocked.error;
-  const { perUserLimit, perDomainLimit } = policy;
+  const { perUserLimit, perDomainLimit, user: policyUser } = policy;
 
   const address = `${req.localPart}@${req.domain}`;
   const existing = await db.select().from(mailboxes).where(eq(mailboxes.address, address)).get();
@@ -138,6 +141,7 @@ export async function claimMailbox(
          WHERE (? = 0 OR (SELECT COUNT(*) FROM mailboxes WHERE user_id = ?) < ?)
            AND (? = 0 OR (SELECT COUNT(*) FROM mailboxes WHERE user_id = ? AND domain = ?) < ?)
            AND COALESCE((SELECT json_extract(value, '$.revision') FROM settings WHERE key = 'domains'), 0) = ?
+           AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active' AND role = ? AND mailbox_policy_revision = ?)
            AND EXISTS (SELECT 1 FROM settings, json_each(settings.value, '$.list') AS configured
              WHERE settings.key = 'domains'
                AND lower(trim(CASE WHEN configured.type = 'text' THEN configured.value
@@ -156,6 +160,9 @@ export async function claimMailbox(
         req.domain,
         perDomainLimit,
         settings.domains.revision ?? 0,
+        userId,
+        policyUser.role,
+        policyUser.mailboxPolicyRevision,
         req.domain,
       )
       .first<{ id: number }>();
@@ -163,6 +170,10 @@ export async function claimMailbox(
       const current = await getSettingsFresh(env);
       if ((current.domains.revision ?? 0) !== (settings.domains.revision ?? 0)) {
         throw new AppError('conflict', '域名配置已改变，请刷新后重试');
+      }
+      const currentUser = await loadMailboxPolicyUser(db, userId);
+      if (currentUser.mailboxPolicyRevision !== policyUser.mailboxPolicyRevision || currentUser.role !== policyUser.role) {
+        throw new AppError('conflict', '邮箱权限已改变，请刷新后重试');
       }
       throw new AppError('forbidden', '认领配额已在并发请求中用尽，请刷新后重试');
     }
@@ -223,12 +234,24 @@ export async function transferMailbox(
   // 重试已完成的过户不清理新主人后来建立的共享，也不重复记审计。
   if (row.userId === target.id) return resultFor(row, false);
   if (row.userId !== req.expectedOwnerId) throw new AppError('conflict', '邮箱归属已改变，请刷新后重新确认');
+  // 公共配置用户保留管理员强制过户行为；专属用户的新增归属遵守其完整认领规则。
+  const settings = target.role === 'user' && target.mailboxPolicy !== null ? await getSettingsFresh(env) : undefined;
+  const policy = settings ? await evaluateClaimPolicy(db, settings, { userId: target.id, role: target.role },
+    row.address.slice(0, row.address.lastIndexOf('@')), row.domain, target) : undefined;
+  if (policy?.blocked) throw policy.blocked.error;
+  const totalLimit = policy?.perUserLimit ?? 0;
+  const domainLimit = policy?.perDomainLimit ?? 0;
   const previous = await db.select({ username: users.username }).from(users).where(eq(users.id, row.userId)).get();
   const detail = `${previous?.username ?? `user#${row.userId}`} (#${row.userId}) → ${target.username} (#${target.id})；保留全部历史并撤销旧共享`;
   const results = await env.db.batch([
     env.db.prepare(`UPDATE mailboxes SET user_id = ? WHERE id = ? AND user_id = ? AND user_id <> ?
-      AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active')`)
-      .bind(target.id, id, req.expectedOwnerId, target.id, target.id),
+      AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active' AND role = ? AND mailbox_policy_revision = ?)
+      AND (? = 0 OR (SELECT COUNT(*) FROM mailboxes WHERE user_id = ?) < ?)
+      AND (? = 0 OR (SELECT COUNT(*) FROM mailboxes WHERE user_id = ? AND domain = ?) < ?)
+      AND (? = 0 OR COALESCE((SELECT json_extract(value, '$.revision') FROM settings WHERE key = 'domains'), 0) = ?)`)
+      .bind(target.id, id, req.expectedOwnerId, target.id, target.id, target.role, target.mailboxPolicyRevision,
+        totalLimit, target.id, totalLimit, domainLimit, target.id, row.domain, domainLimit,
+        settings ? 1 : 0, settings?.domains.revision ?? 0),
     // changes() 关联事务内紧邻的上一条写入；CAS 失败时后续审计和共享删除均不执行。
     env.db.prepare(`INSERT INTO admin_audit_logs (actor_id, actor_name, action, target, detail, ip)
       SELECT ?, ?, 'mailbox.transfer', ?, ?, ? WHERE changes() = 1`)
@@ -239,7 +262,7 @@ export async function transferMailbox(
   if (!updated) throw new AppError('not_found', '邮箱已被释放，请刷新后重试');
   if (!results[0]?.meta.changes) {
     if (updated.userId === target.id) return resultFor(updated, false);
-    throw new AppError('conflict', '邮箱归属或目标用户状态已改变，请刷新后重新确认');
+    throw new AppError('conflict', '邮箱归属、目标用户权限或额度已改变，请刷新后重新确认');
   }
   // 返回本次提交的结果；若另一管理员随后再次过户，客户端读回列表即可发现。
   return resultFor({ ...row, userId: target.id }, true, results[2]?.meta.changes ?? 0);

@@ -2,6 +2,7 @@ export * from './constants.js';
 export * from './envelope.js';
 export * from './schemas/auth.js';
 export * from './schemas/mailbox.js';
+export * from './schemas/mailbox-policy.js';
 export * from './schemas/mail.js';
 export * from './schemas/api-key.js';
 export * from './schemas/invite.js';

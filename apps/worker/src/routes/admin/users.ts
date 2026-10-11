@@ -29,6 +29,12 @@ app.put('/:id', async (c) => {
   if (req.status) changes.push(req.status === 'disabled' ? '禁用' : '启用');
   if (req.role) changes.push(`角色→${req.role}`);
   if (req.password) changes.push('重置密码');
+  if (req.mailboxPolicy !== undefined) {
+    const policy = req.mailboxPolicy;
+    const limit = (value: number) => value === 0 ? '不限' : String(value);
+    changes.push(policy === null ? '邮箱权限→公共配置'
+      : `邮箱权限→专属配置（总数 ${limit(policy.perUserLimit)}；${policy.domains.map((entry) => `${entry.domain}: ${limit(entry.perUserLimit)}`).join('、') || '无可认领域名'}）`);
+  }
   await logAdminAction(c.env, acting, 'user.update', updated.username, changes.join('、'), clientIp(c));
   return ok(c, updated);
 });

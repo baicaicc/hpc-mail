@@ -9,14 +9,37 @@
 | `GET /admin/users` | 全部用户数组 |
 | `GET /admin/users/search?q=…&excludeUserId=…&limit=20` | 按用户名搜索启用中的用户，忽略大小写；可排除当前主人；limit 1–20，默认 20；返回 `{items:[{id,username,role}],hasMore}` |
 | `POST /admin/users` | `{username,password,role?}`，role 默认 user，可 admin；201 新用户，不自动认领邮箱 |
-| `PUT /admin/users/:id` | 至少一个 `status:active\|disabled`、`role:user\|admin`、`password`（重置密码）；返回更新后的用户 |
+| `PUT /admin/users/:id` | 至少一个 `status:active\|disabled`、`role:user\|admin`、`password`（重置密码）、`mailboxPolicy`（邮箱权限）；修改邮箱权限需带 `expectedMailboxPolicyRevision`；返回更新后的用户 |
 | `DELETE /admin/users/:id` | `{success:true}`，不可恢复；账户与其邮箱/共享/Key/星标关联撤销，邮件历史仍按地址保留 |
 
-用户含 `id,username,role,status,mailboxCount,mailboxes,apiKeyCount,createdAt,lastLoginAt,avatarUrl`。建户/重置密码约束见鉴权参考。不能禁用或删除自己；不能移除最后一个启用中的管理员。禁用/重置密码撤销旧会话，禁用期间 Key 也被拒绝；重置密码本身不吊销 Key。降级管理员撤销其名下共享，存量邮箱仍存在，新认领/发件按当前角色校验。
+用户含 `id,username,role,status,mailboxCount,mailboxes,mailboxPolicy,mailboxPolicyRevision,apiKeyCount,createdAt,lastLoginAt,avatarUrl`。建户/重置密码约束见鉴权参考。不能禁用或删除自己；不能移除最后一个启用中的管理员。禁用/重置密码撤销旧会话，禁用期间 Key 也被拒绝；重置密码本身不吊销 Key。降级管理员撤销其名下共享，存量邮箱仍存在，新认领/发件按当前角色校验。
+
+## 用户专属邮箱权限
+
+管理员在网页「用户管理 → 更多操作 → 邮箱权限」切换公共/专属配置。API 先 `GET /api/admin/users` 读取目标用户的 `mailboxPolicyRevision`，再更新：
+
+```json
+{
+  "expectedMailboxPolicyRevision": 0,
+  "mailboxPolicy": {
+    "perUserLimit": 10,
+    "domains": [
+      {"domain": "a.example", "perUserLimit": 3},
+      {"domain": "b.example", "perUserLimit": 7}
+    ]
+  }
+}
+```
+
+`mailboxPolicy` 非空时完整替代公共域名范围、总数量和每域数量配置，不与公共域名取并集，也不取公共额度的较小值。可授权非公开域名，但域名必须已存在于系统配置。额度均为 0–10000 整数，0 表示不限；空 `domains` 表示不能新增认领邮箱。系统保留前缀仍对普通用户生效；管理员始终豁免。公共配置改变不覆盖专属配置，系统移除域名后该域名不能继续新增认领。
+
+恢复公共配置提交 `{"mailboxPolicy":null,"expectedMailboxPolicyRevision":当前版本}`。保存和角色变更都会增加 `mailboxPolicyRevision`；409 时重新读取并核对当前配置，不能仅换版本强行覆盖陈旧草稿。普通用户不能修改自己的权限，API Key 也不能调用管理接口。认领与过户在写入时复核目标权限版本、域名版本和数量，避免并发突破限制。
+
+权限收紧、删除域名授权或恢复公共配置不会释放已有邮箱、删除邮件或撤销已有邮箱的收发能力；所有名下邮箱继续计入总额度，超额时不能新增。只读共享邮箱不计入认领额度。专属权限只作用于邮箱认领与新增过户，不替代每日外发、翻译、注册、2FA 等系统规则。用户应从自己的 `/api/domains` 或 `/v1/domains` 查询可认领域名，公开 `/api/config` 不包含个人权限。
 
 ## 强制过户邮箱
 
-管理员 JWT 可 `POST /api/admin/mailboxes/:id/transfer`，将任意现有已认领邮箱直接转给指定的启用中用户（普通用户或管理员）。自己或别人认领的均可；此操作不经过未认领状态，不受普通认领配额、保留前缀、域名公开性或当前新认领域名列表限制。它不创建尚未存在的邮箱。
+管理员 JWT 可 `POST /api/admin/mailboxes/:id/transfer`，将任意现有已认领邮箱直接转给指定的启用中用户（普通用户或管理员）。自己或别人认领的均可；此操作不经过未认领状态。目标普通用户有专属邮箱权限时，域名范围、系统保留前缀、总数和单域名数量必须符合其权限，超出时先调整配置。目标用户使用公共配置或为管理员时，保留原有强制过户豁免。它不创建尚未存在的邮箱。
 
 先读 `GET /api/mailboxes?all=1` 核对邮箱 `id,address,userId`，再用 `GET /api/admin/users/search?q=用户名&excludeUserId=当前主人ID` 查找目标用户。q 为 1–32 字符的用户名片段，完全匹配优先，其次前缀和其他包含匹配；hasMore=true 时继续补充用户名缩小范围。body 为 `{userId:目标用户ID,expectedOwnerId:列表中的当前主人ID}`，两者必须是正整数。
 

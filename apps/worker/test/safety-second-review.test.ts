@@ -36,8 +36,8 @@ function beforeStatement(pattern: RegExp, hook: () => Promise<void>): Env {
   } }) } as Env;
 }
 
-async function seed(name: string) {
-  return createDb(env).insert(users).values({ username: name, passwordHash: 'test-only' }).returning().get();
+async function seed(name: string, role: 'admin' | 'user' = 'user') {
+  return createDb(env).insert(users).values({ username: name, passwordHash: 'test-only', role }).returning().get();
 }
 
 describe('independent safety review regressions', () => {
@@ -53,7 +53,7 @@ describe('independent safety review regressions', () => {
   });
 
   it.each(['admin', 'user'] as const)('rejects a removed domain at the %s claim write boundary', async role => {
-    const user = await seed(`second-review-domain-${role}`);
+    const user = await seed(`second-review-domain-${role}`, role);
     await updateSettings(env, { domains: { list: [{ domain: 'claim-race.example', public: true, perUserLimit: 0 }] } });
     const racing = beforeStatement(/INSERT INTO "?mailboxes"?/i, async () => {
       await updateSettings(env, { domains: { list: [] } });
@@ -74,7 +74,7 @@ describe('independent safety review regressions', () => {
   });
 
   it('still accepts normalized legacy string domain settings for an administrator', async () => {
-    const user = await seed('second-review-legacy-domain');
+    const user = await seed('second-review-legacy-domain', 'admin');
     await env.db.prepare("INSERT INTO settings (key, value) VALUES ('domains', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .bind(JSON.stringify({ list: ['Legacy-Claim.Example'] })).run();
     expect((await claimMailbox(env, user!.id, 'admin', { localPart: 'legacy', domain: 'legacy-claim.example' })).address)

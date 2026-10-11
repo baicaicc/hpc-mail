@@ -7,10 +7,10 @@ import type { AppContext } from '../types.js';
 const app = new Hono<AppContext>();
 app.use('*', requireAuth);
 
-/** 按角色返回可见域名：管理员=全部系统域名，普通用户=公开子集。认领/发件/收件筛选的前端选项来源。 */
+/** 当前用户可认领的域名：管理员全部，普通用户按公共或专属规则。 */
 app.get('/', async (c) => {
   const user = c.get('user')!;
-  const domains = await getVisibleDomains(c.env, user.role === 'admin');
+  const domains = await getVisibleDomains(c.env, user.id);
   return ok(c, domains);
 });
 

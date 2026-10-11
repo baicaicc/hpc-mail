@@ -120,6 +120,13 @@
       "when": 1791643240762,
       "tag": "0016_message_translations",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1791714965337,
+      "tag": "0017_user_mailbox_policy",
+      "breakpoints": true
     }
   ]
 }

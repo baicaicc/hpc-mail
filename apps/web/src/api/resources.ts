@@ -76,7 +76,7 @@ export const configApi = {
   getPublic: () => api.get<PublicConfig>('/config', { token: null }),
 };
 
-// ---- 可见域名（需登录，按角色：管理员=全部，普通用户=公开子集）----
+// ---- 可认领域名（需登录，按公共或用户专属规则）----
 export const domainApi = {
   visible: () => api.get<string[]>('/domains'),
 };

@@ -17,6 +17,8 @@ function user(id: number, username: string): AdminUser {
     role: 'user',
     status: 'active',
     mailboxCount: 0,
+    mailboxPolicy: null,
+    mailboxPolicyRevision: 0,
     mailboxes: [],
     apiKeyCount: 0,
     createdAt: new Date().toISOString(),

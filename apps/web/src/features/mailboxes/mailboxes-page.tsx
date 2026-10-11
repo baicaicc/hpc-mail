@@ -253,7 +253,7 @@ export function MailboxesPage() {
   useEffect(() => {
     if (!wantsClaim || visibleDomains === undefined) return;
     if (visibleDomains.length > 0) setClaimOpen(true);
-    else toast({ title: '暂无可认领的域名', description: '管理员开放域名后即可认领地址。' });
+    else toast({ title: '暂无可认领的域名', description: '请联系管理员配置可认领的域名。' });
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { userMailboxPolicySchema, type UserMailboxPolicy } from './mailbox-policy.js';
 import {
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
@@ -127,9 +128,15 @@ export const updateUserRequestSchema = z
     status: z.enum(USER_STATUSES).optional(),
     role: z.enum(ROLES).optional(),
     password: passwordSchema.optional(),
+    mailboxPolicy: userMailboxPolicySchema.nullable().optional(),
+    expectedMailboxPolicyRevision: z.number().int().min(0).optional(),
   })
-  .refine((v) => v.status !== undefined || v.role !== undefined || v.password !== undefined, {
+  .refine((v) => v.status !== undefined || v.role !== undefined || v.password !== undefined || v.mailboxPolicy !== undefined, {
     message: '至少提供一个待更新字段',
+  })
+  .refine((v) => v.mailboxPolicy === undefined || v.expectedMailboxPolicyRevision !== undefined, {
+    path: ['expectedMailboxPolicyRevision'],
+    message: '修改邮箱权限需提供当前配置版本',
   });
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
 
@@ -139,6 +146,9 @@ export interface AdminUser {
   role: Role;
   status: UserStatus;
   mailboxCount: number;
+  /** null=公共配置；非空时替代公共域名与认领额度。管理员始终豁免。 */
+  mailboxPolicy: UserMailboxPolicy | null;
+  mailboxPolicyRevision: number;
   /** 名下已认领的邮箱地址列表（与 mailboxCount 对应） */
   mailboxes: string[];
   /** 名下 API Key 数（删除用户前确认后果用） */

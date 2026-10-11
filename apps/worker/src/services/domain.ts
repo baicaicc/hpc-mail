@@ -4,7 +4,8 @@ import { chunk } from '../lib/d1.js';
 import { createDb } from '../db/client.js';
 import { mailboxes } from '../db/schema.js';
 import type { Env } from '../types.js';
-import { getSettings } from './setting.js';
+import { getSettings, getSettingsFresh } from './setting.js';
+import { loadMailboxPolicyUser, resolveMailboxPolicy } from './mailbox-policy.js';
 
 /**
  * 全部系统域名名（管理员可用范围）：完全由 settings.domains.list 决定（管理端维护，无写死 fallback）。
@@ -28,13 +29,14 @@ export async function getPublicDomains(env: Env, settings?: Settings): Promise<s
   return s.domains.list.filter((e) => e.public).map((e) => e.domain);
 }
 
-/** 按角色返回可见域名：管理员=全部，普通用户=公开子集。 */
+/** 当前用户可以新增认领的域名；用户专属配置与认领校验使用同一解析器。 */
 export async function getVisibleDomains(
   env: Env,
-  isAdmin: boolean,
+  userId: number,
   settings?: Settings,
 ): Promise<string[]> {
-  return isAdmin ? getDomains(env, settings) : getPublicDomains(env, settings);
+  const user = await loadMailboxPolicyUser(createDb(env), userId);
+  return resolveMailboxPolicy(settings ?? await getSettingsFresh(env), user).domains.map(({ domain }) => domain);
 }
 
 /** 域名是否对普通用户公开。 */

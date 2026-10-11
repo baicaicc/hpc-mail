@@ -32,6 +32,7 @@ import { toast } from '@/components/ui/toast';
 import { formatDateTime, formatRelativeTime } from '@/lib/format';
 import { useIsMobile } from '@/lib/use-media-query';
 import { useCurrentUser } from '@/lib/use-session';
+import { MailboxPolicyDialog } from './mailbox-policy-dialog';
 
 function generatePassword(length = 14): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
@@ -217,6 +218,7 @@ function UserActionsMenu({
   isSelf,
   onViewMail,
   onViewMailboxes,
+  onMailboxPolicy,
   onUpdate,
   onResetPassword,
   onDelete,
@@ -225,6 +227,7 @@ function UserActionsMenu({
   isSelf: boolean;
   onViewMail: () => void;
   onViewMailboxes: () => void;
+  onMailboxPolicy: () => void;
   onUpdate: (patch: Parameters<typeof adminApi.updateUser>[1]) => void;
   onResetPassword: () => void;
   onDelete: () => void;
@@ -239,6 +242,7 @@ function UserActionsMenu({
       <DropdownMenuContent>
         <DropdownMenuItem onSelect={onViewMail}>查看邮件</DropdownMenuItem>
         <DropdownMenuItem onSelect={onViewMailboxes}>查看绑定邮箱</DropdownMenuItem>
+        <DropdownMenuItem disabled={user.role === 'admin'} onSelect={onMailboxPolicy}>邮箱权限</DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={isSelf} onSelect={() => onUpdate({ role: user.role === 'admin' ? 'user' : 'admin' })}>
           {user.role === 'admin' ? '降为普通用户' : '设为管理员'}
@@ -272,6 +276,7 @@ export function UsersPage() {
   const [resetting, setResetting] = useState<AdminUser | null>(null);
   const [deleting, setDeleting] = useState<AdminUser | null>(null);
   const [viewingMailboxes, setViewingMailboxes] = useState<AdminUser | null>(null);
+  const [editingMailboxPolicy, setEditingMailboxPolicy] = useState<AdminUser | null>(null);
 
   const update = useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: Parameters<typeof adminApi.updateUser>[1] }) =>
@@ -301,7 +306,7 @@ export function UsersPage() {
     <div className="mx-auto max-w-5xl">
       <PageHeader
         title="用户管理"
-        description="管理平台账户的角色、状态与密码。"
+        description="管理平台账户的角色、状态、密码与邮箱权限。"
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <UserPlus className="size-4" />
@@ -346,6 +351,9 @@ export function UsersPage() {
                       {user.status === 'active' ? '正常' : '已禁用'}
                     </Badge>
                     <span>邮箱 {user.mailboxCount} 个</span>
+                    <Badge tone={user.mailboxPolicy ? 'accent' : 'neutral'}>
+                      {user.role === 'admin' ? '权限豁免' : user.mailboxPolicy ? '专属配置' : '公共配置'}
+                    </Badge>
                     <span title={user.lastLoginAt ? formatDateTime(user.lastLoginAt) : ''}>
                       {user.lastLoginAt ? `最近登录 ${formatRelativeTime(user.lastLoginAt)}` : '从未登录'}
                     </span>
@@ -357,6 +365,7 @@ export function UsersPage() {
                     isSelf={isSelf}
                     onViewMail={() => navigate(`/admin/users/${user.id}/mail`)}
                     onViewMailboxes={() => setViewingMailboxes(user)}
+                    onMailboxPolicy={() => setEditingMailboxPolicy(user)}
                     onUpdate={(patch) => update.mutate({ id: user.id, patch })}
                     onResetPassword={() => setResetting(user)}
                     onDelete={() => setDeleting(user)}
@@ -374,6 +383,7 @@ export function UsersPage() {
               <TableHead>角色</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>邮箱数</TableHead>
+              <TableHead>邮箱权限</TableHead>
               <TableHead>最近登录</TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
@@ -413,6 +423,11 @@ export function UsersPage() {
                       <span className="text-ink-secondary">0</span>
                     )}
                   </TableCell>
+                  <TableCell>
+                    <Badge tone={user.mailboxPolicy ? 'accent' : 'neutral'}>
+                      {user.role === 'admin' ? '权限豁免' : user.mailboxPolicy ? '专属配置' : '公共配置'}
+                    </Badge>
+                  </TableCell>
                   <TableCell className="text-ink-tertiary" title={user.lastLoginAt ? formatDateTime(user.lastLoginAt) : ''}>
                     {user.lastLoginAt ? formatRelativeTime(user.lastLoginAt) : '从未'}
                   </TableCell>
@@ -423,6 +438,7 @@ export function UsersPage() {
                         isSelf={isSelf}
                         onViewMail={() => navigate(`/admin/users/${user.id}/mail`)}
                         onViewMailboxes={() => setViewingMailboxes(user)}
+                        onMailboxPolicy={() => setEditingMailboxPolicy(user)}
                         onUpdate={(patch) => update.mutate({ id: user.id, patch })}
                         onResetPassword={() => setResetting(user)}
                         onDelete={() => setDeleting(user)}
@@ -437,6 +453,7 @@ export function UsersPage() {
       )}
 
       <MailboxListDialog target={viewingMailboxes} onClose={() => setViewingMailboxes(null)} />
+      <MailboxPolicyDialog target={editingMailboxPolicy} onClose={() => setEditingMailboxPolicy(null)} />
       <ResetPasswordDialog target={resetting} onClose={() => setResetting(null)} />
       <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
       <ConfirmDialog

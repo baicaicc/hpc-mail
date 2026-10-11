@@ -7,6 +7,7 @@ import { hashPassword } from '../lib/password.js';
 import type { Env } from '../types.js';
 import { avatarUrl } from './avatar.js';
 import { mirrorUserEpoch } from './session.js';
+import { getSettingsFresh } from './setting.js';
 
 type UserRow = typeof users.$inferSelect;
 
@@ -44,6 +45,8 @@ function serialize(row: UserRow, mailboxAddresses: string[], apiKeyCount: number
     role: row.role,
     status: row.status,
     mailboxCount: mailboxAddresses.length,
+    mailboxPolicy: row.mailboxPolicy,
+    mailboxPolicyRevision: row.mailboxPolicyRevision,
     mailboxes: mailboxAddresses,
     apiKeyCount,
     createdAt: row.createdAt.toISOString(),
@@ -120,6 +123,21 @@ export async function updateUser(
 
   const patch: Partial<UserRow> = {};
   let bumpEpoch = false;
+  let domainsRevision: number | undefined;
+  if (req.mailboxPolicy !== undefined) {
+    if (req.expectedMailboxPolicyRevision !== target.mailboxPolicyRevision) {
+      throw new AppError('conflict', '邮箱权限已被其他请求修改，请刷新后重试');
+    }
+    if (req.mailboxPolicy !== null) {
+      const settings = await getSettingsFresh(env);
+      const configured = new Set(settings.domains.list.map(({ domain }) => domain));
+      if (req.mailboxPolicy.domains.some(({ domain }) => !configured.has(domain))) {
+        throw new AppError('validation_failed', '只能授权已配置的系统域名');
+      }
+      domainsRevision = settings.domains.revision ?? 0;
+    }
+    patch.mailboxPolicy = req.mailboxPolicy;
+  }
 
   if (req.status !== undefined) {
     if (req.status === 'disabled' && id === actingUserId) {
@@ -146,13 +164,20 @@ export async function updateUser(
 
   let row: UserRow | undefined;
   try {
-    [row] = await db.update(users).set({ ...patch, ...(bumpEpoch ? { authVersion: sql`${users.authVersion} + 1`, authVersionMigrated: true } : {}) }).where(eq(users.id, id)).returning();
+    [row] = await db.update(users).set({ ...patch,
+      ...(req.mailboxPolicy !== undefined || req.role !== undefined ? { mailboxPolicyRevision: sql`${users.mailboxPolicyRevision} + 1` } : {}),
+      ...(bumpEpoch ? { authVersion: sql`${users.authVersion} + 1`, authVersionMigrated: true } : {}),
+    }).where(and(eq(users.id, id),
+      req.mailboxPolicy === undefined ? undefined : eq(users.mailboxPolicyRevision, req.expectedMailboxPolicyRevision!),
+      domainsRevision === undefined ? undefined : sql`COALESCE((SELECT json_extract(value, '$.revision') FROM settings WHERE key = 'domains'), 0) = ${domainsRevision}`,
+    )).returning();
   } catch (error) {
     if (isLastAdminConstraint(error)) {
       throw new AppError('forbidden', '至少保留一个可用管理员，无法执行此操作');
     }
     throw error;
   }
+  if (!row) throw new AppError('conflict', '用户或域名配置已改变，请刷新后重试');
   if (bumpEpoch && row) await mirrorUserEpoch(env, id, row.authVersion);
   // 管理员降为普通用户后，名下邮箱不再是「管理员邮箱」，已有分享立即失效
   if (req.role === 'user' && target.role === 'admin') {
