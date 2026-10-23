@@ -47,8 +47,11 @@ echo "$mode" | grep -qE '^(closed|invite|open)$' || fail "registrationMode 非�
 echo "$config" | jq -e '.data.domains | type == "array"' >/dev/null || fail "domains 非数组: $config"
 
 step "管理员真实登录"
-login=$(curl -sS -X POST "$BASE_URL/api/auth/login" -H 'Content-Type: application/json' \
-  -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}")
+# jq 构造请求体，口令含引号/反斜杠也能登录；管理员已开启 2FA 时由调用方传入当前 6 位码（ADMIN_TOTP）
+login_body=$(jq -n --arg u "$ADMIN_USERNAME" --arg p "$ADMIN_PASSWORD" --arg t "${ADMIN_TOTP:-}" \
+  '{username: $u, password: $p} + (if $t == "" then {} else {totp: $t} end)')
+login=$(curl -sS -X POST "$BASE_URL/api/auth/login" -H 'Content-Type: application/json' --data-binary "$login_body")
+login_body=""
 TOKEN=$(echo "$login" | jq -r '.data.token // empty')
 [ -n "$TOKEN" ] || fail "登录未返回 token: $login"
 
